@@ -1,0 +1,28 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# dotenv environment variables
+.env
+.env.local
+.env.*.local
+blood-buddies-36241-firebase-adminsdk-fbsvc-66f478f57c.json
+# Logs
+logs/
+*.log
+*.log.*
+
+# OS/System
+.DS_Store
+Thumbs.db
+
+# IDE/editor configs
+.vscode/
+.idea/
+
+# Build output
+dist/
+build/
+coverage/
