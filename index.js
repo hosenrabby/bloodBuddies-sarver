@@ -4,8 +4,9 @@ const express = require('express');
 const cors = require('cors');
 const app = express()
 
-var admin = require("firebase-admin");
-var serviceAccount = require("./blood-buddies-36241-firebase-adminsdk-fbsvc-66f478f57c.json");
+const admin = require("firebase-admin");
+const decodeFBserviceKey = Buffer.from(process.env.FIREBASE_SERVICE_KEY,'base64').toString('utf8');
+const serviceAccount = JSON.parse(decodeFBserviceKey);
 
 const port = process.env.PORT || 3000;
 
@@ -30,7 +31,6 @@ const verifyFirebaseToken = async (req, res, next) => {
     return res.status(401).send({ message: 'UnAuthorized Access' })
   }
 }
-
 
 app.use(cors());
 app.use(express.json());
@@ -59,6 +59,22 @@ const run = async () => {
     const upazilaCollection = client.db('bloodBuddies').collection('upazilas')
     const donationRequestCollection = client.db('bloodBuddies').collection('donationRequests')
     const blogCollection = client.db('bloodBuddies').collection('blogs')
+
+    // verify admin for apis ============================
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded?.email;
+      if (!email) {
+        return res.status(401).json({ message: 'Unauthorized: No email in token' });
+      }
+      const user = await userCollection.findOne({ email: email });
+      if (!user) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+      if (user.role === 'Admin' || user.role === 'SuperAdmin') {
+        return next();
+      }
+      return res.status(403).json({ message: 'Forbidden: Admin access only' });
+    }
 
     // get district with divisios==========================
     app.get('/divisions', async (req, res) => {
@@ -104,6 +120,12 @@ const run = async () => {
       const myDonationRequest = await donationRequestCollection.find({ requesterEmail: email }).toArray()
       res.send(myDonationRequest)
     })
+    app.get("/recent-donation-requestsByEmail", verifyFirebaseToken, async (req, res) => {
+      const email = req.query.email
+      // console.log(email)
+      const myRecentRequest = await donationRequestCollection.find({ requesterEmail: email }).sort({ _id: -1 }).limit(3).toArray()
+      res.send(myRecentRequest)
+    })
     app.get("/filteringDonationStatus", verifyFirebaseToken, async (req, res) => {
       const filterStatus = req.query.filterValue;
       // console.log(filterStatus)
@@ -130,12 +152,11 @@ const run = async () => {
     })
     // get donation request data by id
     app.get("/getDoantionReqData-forUpdate/:donation_id", verifyFirebaseToken, async (req, res) => {
-      const id = req.params.donation_id
-      const donationId = new ObjectId(id)
-      // console.log(donationId)
-      const myDonationRequest = await donationRequestCollection.find({ _id: donationId })
-      res.send(myDonationRequest)
-    })
+      const id = req.params.donation_id;
+      const donationId = new ObjectId(id);
+      const myDonationRequest = await donationRequestCollection.findOne({ _id: donationId });
+      res.send(myDonationRequest);
+    });
     // get blogContent data by id
     app.get("/getContentData-forUpdate/:content_id", verifyFirebaseToken, async (req, res) => {
       const id = req.params.content_id;
@@ -213,7 +234,7 @@ const run = async () => {
       const query = { _id: new ObjectId(id) };
       const blogData = req.body;
       const options = { upsert: true }
-      const updated = await donationRequestCollection.updateOne(query, { $set: blogData }, options)
+      const updated = await blogCollection.updateOne(query, { $set: blogData }, options)
       res.send(updated)
     })
 
