@@ -8,6 +8,8 @@ const admin = require("firebase-admin");
 const decodeFBserviceKey = Buffer.from(process.env.FIREBASE_SERVICE_KEY, 'base64').toString('utf8');
 const serviceAccount = JSON.parse(decodeFBserviceKey);
 
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
 const port = process.env.PORT || 3000;
 
 // Middlewares ============================
@@ -59,6 +61,7 @@ const run = async () => {
     const upazilaCollection = client.db('bloodBuddies').collection('upazilas')
     const donationRequestCollection = client.db('bloodBuddies').collection('donationRequests')
     const blogCollection = client.db('bloodBuddies').collection('blogs')
+    const paymentsInfoCollection = client.db('bloodBuddies').collection('paymentsInfo')
 
     // verify admin for apis ============================
     const verifyAdmin = async (req, res, next) => {
@@ -94,11 +97,14 @@ const run = async () => {
       const usersCount = await userCollection.countDocuments();
       const donorsCount = await userCollection.countDocuments({ status: 'Active' });
       const donationReqsCount = await donationRequestCollection.countDocuments();
+      const allPayments = await paymentsInfoCollection.find().toArray();
+      const totalPayments = allPayments.reduce((sum, payment) => sum + payment.amount, 0);
 
       res.send({
         usersCount,
         donorsCount,
-        donationReqsCount
+        donationReqsCount,
+        totalPayments
       });
     });
     // Lloged in user 
@@ -131,6 +137,19 @@ const run = async () => {
         res.send(filtered);
       }
     })
+    // filtering donation status
+    app.get("/filteringUserStatus", verifyFirebaseToken, async (req, res) => {
+      const filterStatus = req.query.filterValue;
+      // console.log(filterStatus)
+      const query = { status: filterStatus };
+      if (filterStatus == 'All') {
+        const filtered = await userCollection.find().toArray();
+        res.send(filtered);
+      } else {
+        const filtered = await userCollection.find(query).toArray();
+        res.send(filtered);
+      }
+    })
     app.get("/filteringDonationStatusByEmail", verifyFirebaseToken, async (req, res) => {
       const filterStatus = req.query.filterValue;
       const email = req.decoded.email;
@@ -143,6 +162,21 @@ const run = async () => {
       }
       res.send(filtered);
     });
+    app.get("/search-donors", async (req, res) => {
+      const { bloodGroup, district, upazila } = req.query;
+
+      const query = {
+        role: "Donor",
+        status: "Active", // Optional: only show active users
+        bloodGroup: bloodGroup,
+        district: district, // this should match the `id` in district collection
+        upazila: upazila
+      };
+
+      const donors = await userCollection.find(query).toArray();
+      res.send(donors);
+    });
+
     app.get("/filteringBlogStatus", verifyFirebaseToken, async (req, res) => {
       const filterStatus = req.query.filterValue;
       // console.log(filterStatus)
@@ -221,7 +255,7 @@ const run = async () => {
       const query = { _id: new ObjectId(id) };
       const donorData = req.body;
       const options = { upsert: true }
-      const updated = await donationRequestCollection.updateOne(query, { $set: {...donorData, status:'Inprogress'} }, options)
+      const updated = await donationRequestCollection.updateOne(query, { $set: { ...donorData, status: 'Inprogress' } }, options)
       res.send(updated)
     })
     // update blogs request
@@ -301,7 +335,7 @@ const run = async () => {
       }
       const limit = endIndex - startIndex;
       const paginatedData = await donationRequestCollection.find({ requesterEmail: email }).skip(startIndex).limit(limit).toArray();
-      const total = await donationRequestCollection.countDocuments();
+      const total = await donationRequestCollection.countDocuments({ requesterEmail: email });
       res.send({
         data: paginatedData,
         total,
@@ -311,7 +345,26 @@ const run = async () => {
       });
     });
     // for my donation request pagination 
-    app.get("/paginated-donation-reqByPending", verifyFirebaseToken, async (req, res) => {
+    app.get("/paginated-all-FundsByEmail", verifyFirebaseToken, async (req, res) => {
+      const email = req.decoded.email
+      const startIndex = parseInt(req.query.startIndex);
+      const endIndex = parseInt(req.query.endIndex);
+      if (isNaN(startIndex) || isNaN(endIndex) || startIndex < 0 || endIndex <= startIndex) {
+        return res.status(400).json({ message: "Invalid startIndex or endIndex" });
+      }
+      const limit = endIndex - startIndex;
+      const paginatedData = await paymentsInfoCollection.find({ userEmail: email }).skip(startIndex).limit(limit).toArray();
+      const total = await paymentsInfoCollection.countDocuments({ userEmail: email });
+      res.send({
+        data: paginatedData,
+        total,
+        startIndex,
+        endIndex,
+        hasMore: endIndex < total
+      });
+    });
+    // for my donation request pagination 
+    app.get("/paginated-donation-reqByPending", async (req, res) => {
       const startIndex = parseInt(req.query.startIndex);
       const endIndex = parseInt(req.query.endIndex);
       if (isNaN(startIndex) || isNaN(endIndex) || startIndex < 0 || endIndex <= startIndex) {
@@ -329,13 +382,13 @@ const run = async () => {
       });
     });
     app.get("/donation-request-details/:id", verifyFirebaseToken, async (req, res) => {
-        const donationId = req.params.id;
-        const objectId = new ObjectId(donationId);
-        const donation = await donationRequestCollection.findOne({ _id: objectId });
-        if (!donation) {
-          return res.status(404).send({ message: "Donation request not found" });
-        }
-        res.send(donation);
+      const donationId = req.params.id;
+      const objectId = new ObjectId(donationId);
+      const donation = await donationRequestCollection.findOne({ _id: objectId });
+      if (!donation) {
+        return res.status(404).send({ message: "Donation request not found" });
+      }
+      res.send(donation);
     });
     // for my donation request pagination 
     app.get("/paginated-all-blogs", verifyFirebaseToken, async (req, res) => {
@@ -356,7 +409,7 @@ const run = async () => {
       });
     });
     // for my donation request pagination 
-    app.get("/paginated-all-blogsByPublished", verifyFirebaseToken, async (req, res) => {
+    app.get("/paginated-all-blogsByPublished", async (req, res) => {
       const startIndex = parseInt(req.query.startIndex);
       const endIndex = parseInt(req.query.endIndex);
       if (isNaN(startIndex) || isNaN(endIndex) || startIndex < 0 || endIndex <= startIndex) {
@@ -397,6 +450,40 @@ const run = async () => {
         hasMore: endIndex < total
       });
     });
+
+    // Stripe Payment API
+    app.post('/create-payment-intent', async (req, res) => {
+      try {
+        const { amount } = req.body;
+
+        if (!amount || isNaN(amount)) {
+          return res.status(400).json({ error: "Amount is required and must be a number." });
+        }
+
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: amount * 100, // amount in cents (e.g. $10 = 1000)
+          currency: 'usd',
+          payment_method_types: ['card'],
+        });
+
+        res.status(200).send({
+          clientSecret: paymentIntent.client_secret
+        });
+      } catch (error) {
+        console.error("Stripe Error:", error.message);
+        res.status(500).json({ error: error.message });
+      }
+    });
+    // add payment information ============================
+    app.post('/paymant-success-data', verifyFirebaseToken, async (req, res) => {
+      const paynentInfo = req.body
+      const payment = await paymentsInfoCollection.insertOne(paynentInfo)
+      res.send(payment)
+    })
+
+
+
+
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } finally { }
